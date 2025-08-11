@@ -7,31 +7,30 @@ branding:
   color: 'orange'
 
 inputs:
-  functions_dir:
-    description: 'Directory containing functions and pyproject.toml'
-    required: false
-    default: 'functions'
-  to_deploy:
-    description: 'Firebase resource to deploy (e.g. functions, hosting)'
-    required: false
-    default: 'functions'
-  environment:
-    description: 'Environment to deploy to'
-    required: true
-    type: choice
-    options:
-      - staging
-      - prod
   service_account_json:
     description: 'Firebase service account JSON'
     required: true
+  deploy_command:
+    description: 'Deploy command (e.g. "firebase deploy --only functions", "make deploy")'
+    required: false
+    default: 'firebase deploy --only functions'
   project_id:
-    description: 'Firebase project ID'
-    required: true
+    description: 'Firebase project ID (will firebase use <project_id> if specified)'
+    required: false
+  functions_dir:
+    description: 'Directory containing functions and pyproject.toml (if requirements.txt is not present, will create with uv)'
+    required: false
+    default: 'functions'
 
 runs:
   using: 'composite'
   steps:
+    - name: Install build tools for make support
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+
     - name: Set up Node.js for Firebase CLI
       uses: actions/setup-node@v3
       with:
@@ -47,6 +46,9 @@ runs:
       uses: astral-sh/setup-uv@v5
 
     - name: Setup Python from pyproject.toml
+      env:
+        REQUIREMENTS_PATH: ${{ inputs.functions_dir }}/requirements.txt
+      if: ${{ !hashFiles(env.REQUIREMENTS_PATH) }}
       shell: bash
       run: |
         cd ${{ inputs.functions_dir }}
@@ -55,38 +57,13 @@ runs:
         ln -s .venv venv
 
     - name: Authenticate with GCP service account key
-      shell: bash
-      run: |
-        echo "${{ inputs.service_account_json }}" > service-account.json
-        echo "GOOGLE_APPLICATION_CREDENTIALS=service-account.json" >> $GITHUB_ENV
+      uses: 'google-github-actions/auth@v2'
+      with:
+        credentials_json: '${{ inputs.service_account_json }}'
 
-    - name: Authenticate GitHub Actions service account
-      shell: bash
-      run: |
-        gcloud auth activate-service-account --key-file=service-account.json
-
-    - name: Verify service account ADC (Debug)
-      shell: bash
-      run: |
-        gcloud config get-value account
-        gcloud auth list
-
-    - name: Verify Enabled APIs (Debug)
-      shell: bash
-      run: |
-        gcloud services list --enabled --project=${{ inputs.project_id }}
-
-    - name: List Firebase Projects (Debug Mode)
-      shell: bash
-      run: firebase projects:list --debug
-
-    - name: Verify Service Account IAM Policy (Debug)
-      shell: bash
-      run: |
-        echo "Verifying IAM policy for project: ${{ inputs.project_id }}"
-        gcloud projects get-iam-policy ${{ inputs.project_id }} --format=json
 
     - name: Select Firebase Project
+      if: ${{ inputs.project_id }}
       shell: bash
       run: |
         firebase use ${{ inputs.project_id }} --non-interactive
@@ -94,18 +71,12 @@ runs:
     - name: Deploy Firebase Resources
       shell: bash
       run: |
-        firebase deploy --only ${{ inputs.to_deploy }} --debug
+        ${{ inputs.deploy_command }}
 
     - name: Post-deployment summary
       shell: bash
       run: |
         echo "### Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
-        echo "* **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
         echo "* **Project**: ${{ inputs.project_id }}" >> $GITHUB_STEP_SUMMARY
-        echo "* **Resources**: ${{ inputs.to_deploy }}" >> $GITHUB_STEP_SUMMARY
+        echo "* **Deploy Command**: ${{ inputs.deploy_command }}" >> $GITHUB_STEP_SUMMARY
         echo "* **Functions Directory**: ${{ inputs.functions_dir }}" >> $GITHUB_STEP_SUMMARY
-
-    - name: Cleanup credentials
-      if: always()
-      shell: bash
-      run: rm -f service-account.json
